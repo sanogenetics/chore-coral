@@ -49,8 +49,8 @@ jobs:
       - run:
           name: Upload to codecov.
           command: |
-            cd server
             # see https://about.codecov.io/blog/introducing-codecovs-new-uploader/
             curl -Os https://uploader.codecov.io/latest/linux/codecov
             chmod +x codecov
             ./codecov -t ${CODECOV_TOKEN}
+            rm codecov
