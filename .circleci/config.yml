@@ -1,0 +1,50 @@
+version: 2.1
+jobs:
+  build:
+    docker:
+      - image: cimg/python:3.10.2
+        auth:
+          username: $DOCKERHUB_USERNAME
+          password: $DOCKERHUB_PASSWORD
+    # 1vCPU & 2GB = small
+    # 2vCPU & 4GB = medium
+    # 4vCPU & 8GB = large
+    resource_class: small
+    steps:
+
+      - checkout
+
+      - run:
+          name: Install software and dependencies
+          command: |
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip pip-tools
+            pip-sync requirements.txt requirements-dev.txt
+            pip install -e '.[dev]'
+            pipdeptree
+
+      - run:
+          name: Run tests
+          command: |
+            mkdir -p test-reports/pytest
+            source venv/bin/activate
+            # --cov --cov-report xml:test-reports/coverage.xml  = report test coverage to a file
+            # --junitxml test-reports/pytest/tests.xml  = output results in XML to a file (for CircleCI to parse)
+            pytest tests/ -s --cov --cov-report xml:test-reports/coverage.xml --junitxml test-reports/pytest/tests.xml --log-cli-level ERROR
+
+      - store_test_results:
+          # must be a directory with named subdirectories
+          path: test-reports
+
+      - store_artifacts:
+          path: test-reports
+
+      - run:
+          name: Upload to codecov.
+          command: |
+            cd server
+            # see https://about.codecov.io/blog/introducing-codecovs-new-uploader/
+            curl -Os https://uploader.codecov.io/latest/linux/codecov
+            chmod +x codecov
+            ./codecov -t ${CODECOV_TOKEN}
