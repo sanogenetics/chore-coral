@@ -1,5 +1,6 @@
+import datetime
 import re
-from typing import Iterable, Union
+from typing import Any, Iterable, Union
 
 import boto3
 
@@ -18,6 +19,72 @@ class JobBlueprintMismatchError(Exception):
 
 class JobBlueprintCreationError(Exception):
     pass
+
+
+class JobManager:
+    queue: str
+    blueprint: str
+    client: Any
+
+    def __init__(self, batch_client, queue: str, blueprint: str):
+        self.client = batch_client
+        self.queue = queue
+        self.blueprint = blueprint
+
+    def submit(self, name: str, command: Iterable[str]) -> str:
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.submit_job
+
+        # optionally add a command if specified
+        containerOverrides = {}
+        if command:
+            containerOverrides["command"] = command
+
+        response = self.client.submit_job(
+            jobName=name,
+            jobQueue=self.queue,
+            jobDefinition=self.blueprint,
+            containerOverrides=containerOverrides,
+        )
+
+        return response["jobId"]
+
+    def get_all(self, created_after: datetime.datetime):
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.list_jobs
+
+        # convert created_after into a miliseconds since 1970 value
+        created_miliseconds = str(int(created_after.timestamp() * 1000))
+
+        nextToken = None
+        first = True
+        while first or nextToken:
+            kwargs = {}
+            # handle a non-first page
+            if nextToken:
+                kwargs["nextToken"] = nextToken
+
+            response = self.client.list_jobs(
+                jobQueue=self.queue,
+                # filter to jobs after a date
+                # using a filter means all statuses returned
+                filters=[
+                    {"name": "JOB_DEFINITION", "values": [self.blueprint]},
+                    {"name": "AFTER_CREATED_AT", "values": [created_miliseconds]},
+                ],
+                **kwargs,
+            )
+            for job in response["jobSummaryList"]:
+                yield job
+
+            # mark that we've finished the first page
+            first = False
+            # move to the next page, if applicable
+            if "nextToken" in response and response["nextToken"]:
+                nextToken = response["nextToken"]
+            else:
+                # no next page
+                nextToken = None
+
+        # no more matches found
 
 
 class Builder:
@@ -252,7 +319,6 @@ class Builder:
         image: str,
         vcpu: Union[float, int],
         memory: int,
-        command: Iterable[str],
     ) -> str:
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.describe_job_definitions
 
@@ -285,13 +351,6 @@ class Builder:
                         raise JobBlueprintMismatchError(
                             f"memory is {blueprint['containerProperties']['memory']} not {memory}"
                         )
-                    if tuple(blueprint["containerProperties"]["command"]) != tuple(
-                        command
-                    ):
-                        raise JobBlueprintMismatchError(
-                            f"command is {blueprint['containerProperties']['command']} not {command}"
-                        )
-
                     # TODO more validation
 
                     # got to here without problem so we can use it
@@ -316,7 +375,6 @@ class Builder:
         image: str,
         vcpu: Union[float, int],
         memory: int,
-        command: Iterable[str],
     ) -> str:
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.register_job_definition
 
@@ -371,9 +429,6 @@ class Builder:
                 {"type": "MEMORY", "value": str(memory)},
             ],
         }
-        # optionally add a command if specified
-        if command:
-            containerProperties["command"] = command
 
         # send the actual client request
         response = batch_client.register_job_definition(
@@ -392,18 +447,15 @@ class Builder:
         image: str,
         vcpu: Union[float, int],
         memory: int,
-        command: Iterable[str],
     ) -> str:
 
         # Note: this is vulnerable to race conditions if another process creates between
         # the get and the create.
-        existing = self._get_blueprint(batch_client, name, image, vcpu, memory, command)
+        existing = self._get_blueprint(batch_client, name, image, vcpu, memory)
         if existing:
             return existing
         else:
-            return self._create_blueprint(
-                batch_client, name, image, vcpu, memory, command
-            )
+            return self._create_blueprint(batch_client, name, image, vcpu, memory)
 
     def build(
         self,
@@ -411,13 +463,13 @@ class Builder:
         security_group_id: str,
         subnet_ids: Iterable[str],
         image_name: str,
-        image_tag: str,
-        image_repo: Union[str, None],
+        image_tag: str = "latest",
+        image_repo: Union[str, None] = None,
         vcpu: Union[float, int] = 0.25,
         memory: int = 512,
         command: Iterable[str] = [],
         name_prefix: str = "chorecoral",
-    ):
+    ) -> JobManager:
 
         # TODO when a default service role is created its called AWSServiceRoleForBatch
         # see https://docs.aws.amazon.com/batch/latest/userguide/service_IAM_role.html
@@ -449,11 +501,11 @@ class Builder:
         )
 
         # ensure queue exists
-        self._get_or_create_queue(batch_client, name, compute_arn)
+        job_queue_arn = self._get_or_create_queue(batch_client, name, compute_arn)
 
         # ensure blueprint exists
-        self._get_or_create_blueprint(
-            batch_client, name, image_full, vcpu, memory, command
+        job_definition_arn = self._get_or_create_blueprint(
+            batch_client, name, image_full, vcpu, memory
         )
 
-        # TODO create job
+        return JobManager(batch_client, job_queue_arn, job_definition_arn)
