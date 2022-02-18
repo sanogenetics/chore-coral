@@ -8,6 +8,10 @@ class ComputeEnvironmentMismatchError(Exception):
     pass
 
 
+class JobQueueMismatchError(Exception):
+    pass
+
+
 class Builder:
     def __init__(self):
         pass
@@ -40,6 +44,7 @@ class Builder:
                     env_type = compute_environment["type"]
                     env_state = compute_environment["state"]
                     env_status = compute_environment["status"]
+                    env_status_reason = compute_environment["statusReason"]
                     env_service_role = compute_environment["serviceRole"]
                     env_compute_type = compute_environment["computeResources"]["type"]
                     env_compute_maxvcpus = compute_environment["computeResources"][
@@ -57,7 +62,9 @@ class Builder:
                     if env_state != "DISABLED":
                         raise ComputeEnvironmentMismatchError(f"state is {env_state}")
                     if env_status not in ("DELETING", "DELETED", "INVALID"):
-                        raise ComputeEnvironmentMismatchError(f"status is {env_status}")
+                        raise ComputeEnvironmentMismatchError(
+                            f"status is {env_status} because {env_status_reason}"
+                        )
                     if env_service_role != service_role_arn:
                         raise ComputeEnvironmentMismatchError(
                             f"service role is {env_service_role}"
@@ -86,8 +93,14 @@ class Builder:
 
             # mark that we've finished the first page
             first = False
+            # move to the next page, if applicable
+            if "nextToken" in response and response["nextToken"]:
+                nextToken = response["nextToken"]
+            else:
+                # no next page
+                nextToken = None
 
-        # unable to find an existing compute environment
+        # no match found
         return None
 
     def _create_compute_environment(
@@ -147,8 +160,57 @@ class Builder:
                 batch_client, name, service_role_arn, security_group_id, subnet_ids
             )
 
-    def _get_queue(self, batch_client, name: str, compute_environment_arn: str) -> str:
-        raise NotImplementedError()
+    def _get_queue(
+        self, batch_client, name: str, compute_environment_arn: str
+    ) -> Union[None, str]:
+
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.describe_job_queues
+
+        nextToken = None
+        first = True
+        while first or nextToken:
+            kwargs = {}
+            # handle a non-first page
+            if nextToken:
+                kwargs["nextToken"] = nextToken
+
+            response = batch_client.describe_job_queues(
+                **kwargs,
+            )
+            for job_queue in response["jobQueues"]:
+                if job_queue["jobQueueName"] == name:
+                    # found a name match
+
+                    queue_state = job_queue["state"]
+                    queue_status = job_queue["status"]
+                    queue_status_reason = job_queue["statusReason"]
+                    queue_compute_envs = job_queue["computeEnvironmentOrder"]
+
+                    if queue_state != "DISABLED":
+                        raise JobQueueMismatchError(f"state is {queue_state}")
+                    if queue_status not in ("DELETING", "DELETED", "INVALID"):
+                        raise JobQueueMismatchError(
+                            f"status is {queue_status} because {queue_status_reason}"
+                        )
+                    if len(queue_compute_envs) != 1:
+                        raise JobQueueMismatchError(
+                            f"status is {queue_status} because {queue_status_reason}"
+                        )
+
+                    # got to here without problem so we can use it
+                    return job_queue["jobQueueArn"]
+
+            # mark that we've finished the first page
+            first = False
+            # move to the next page, if applicable
+            if "nextToken" in response and response["nextToken"]:
+                nextToken = response["nextToken"]
+            else:
+                # no next page
+                nextToken = None
+
+        # no match found
+        return None
 
     def _create_queue(
         self, batch_client, name: str, compute_environment_arn: str
