@@ -28,7 +28,10 @@ jobs:
             pip install --upgrade pip pip-tools
             pip-sync requirements.txt requirements.dev.txt
             pip install -e '.[dev]'
-            pipdeptree
+
+      - run:
+          name: Print dependencies for reference
+          command: pipdeptree
 
       - setup_remote_docker:
           version: 20.10.11
