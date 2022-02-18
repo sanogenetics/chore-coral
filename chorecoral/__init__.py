@@ -34,7 +34,6 @@ class Builder:
             response = batch_client.describe_compute_environments(
                 **kwargs,
             )
-            print(response)
             for compute_environment in response["computeEnvironments"]:
                 if compute_environment["computeEnvironmentName"] == name:
                     # found a name match
@@ -42,6 +41,16 @@ class Builder:
                     env_state = compute_environment["state"]
                     env_status = compute_environment["status"]
                     env_service_role = compute_environment["serviceRole"]
+                    env_compute_type = compute_environment["computeResources"]["type"]
+                    env_compute_maxvcpus = compute_environment["computeResources"][
+                        "maxvCpus"
+                    ]
+                    env_compute_securitygroupids = compute_environment[
+                        "computeResources"
+                    ]["securityGroupIds"]
+                    env_compute_subnets = compute_environment["computeResources"][
+                        "subnets"
+                    ]
 
                     if env_type != "MANAGED":
                         raise ComputeEnvironmentMismatchError(f"type is {env_type}")
@@ -52,6 +61,24 @@ class Builder:
                     if env_service_role != service_role_arn:
                         raise ComputeEnvironmentMismatchError(
                             f"service role is {env_service_role}"
+                        )
+                    if env_compute_type != "FARGATE":
+                        raise ComputeEnvironmentMismatchError(
+                            f"type is {env_compute_type}"
+                        )
+                    if env_compute_maxvcpus != 100:
+                        raise ComputeEnvironmentMismatchError(
+                            f"maxvCpus is {env_compute_type}"
+                        )
+                    if frozenset(env_compute_securitygroupids) != frozenset(
+                        [security_group_id]
+                    ):
+                        raise ComputeEnvironmentMismatchError(
+                            f"security group ids are {env_compute_type}"
+                        )
+                    if frozenset(env_compute_subnets) != frozenset(subnet_ids):
+                        raise ComputeEnvironmentMismatchError(
+                            f"subnets are {env_compute_type}"
                         )
 
                     # got to here without problem so we can use it
