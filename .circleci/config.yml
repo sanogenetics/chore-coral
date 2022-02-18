@@ -31,7 +31,9 @@ jobs:
 
       - run:
           name: Print dependencies for reference
-          command: pipdeptree
+          command: |
+            source venv/bin/activate
+            pipdeptree
 
       - setup_remote_docker:
           version: 20.10.11
