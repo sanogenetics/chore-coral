@@ -30,6 +30,9 @@ jobs:
             pip install -e '.[dev]'
             pipdeptree
 
+      - setup_remote_docker:
+          version: 20.10.11
+
       - run:
           name: Run tests
           command: |
