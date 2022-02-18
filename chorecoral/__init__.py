@@ -1,6 +1,11 @@
+import re
 from typing import Iterable, Union
 
 import boto3
+
+
+class ComputeEnvironmentMismatchError(Exception):
+    pass
 
 
 class Builder:
@@ -15,7 +20,48 @@ class Builder:
         security_group_id: str,
         subnet_ids: Iterable[str],
     ) -> Union[str, None]:
-        raise NotImplementedError()
+
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/batch.html#Batch.Client.describe_compute_environments
+
+        nextToken = None
+        first = True
+        while first or nextToken:
+            kwargs = {}
+            # handle a non-first page
+            if nextToken:
+                kwargs["nextToken"] = nextToken
+
+            response = batch_client.describe_compute_environments(
+                **kwargs,
+            )
+            print(response)
+            for compute_environment in response["computeEnvironments"]:
+                if compute_environment["computeEnvironmentName"] == name:
+                    # found a name match
+                    env_type = compute_environment["type"]
+                    env_state = compute_environment["state"]
+                    env_status = compute_environment["status"]
+                    env_service_role = compute_environment["serviceRole"]
+
+                    if env_type != "MANAGED":
+                        raise ComputeEnvironmentMismatchError(f"type is {env_type}")
+                    if env_state != "DISABLED":
+                        raise ComputeEnvironmentMismatchError(f"state is {env_state}")
+                    if env_status not in ("DELETING", "DELETED", "INVALID"):
+                        raise ComputeEnvironmentMismatchError(f"status is {env_status}")
+                    if env_service_role != service_role_arn:
+                        raise ComputeEnvironmentMismatchError(
+                            f"service role is {env_service_role}"
+                        )
+
+                    # got to here without problem so we can use it
+                    return compute_environment["computeEnvironmentArn"]
+
+            # mark that we've finished the first page
+            first = False
+
+        # unable to find an existing compute environment
+        return None
 
     def _create_compute_environment(
         self,
@@ -111,8 +157,18 @@ class Builder:
         image_tag: str,
         name_prefix: str = "chorecoral",
     ):
+
+        # TODO when a default service role is created its called AWSServiceRoleForBatch
+        # see https://docs.aws.amazon.com/batch/latest/userguide/service_IAM_role.html
+        # We should detect and use this role if no service role is given.
+
         # create a name for this in general
-        name = f"{name_prefix}:{image_name}:{image_tag}"
+        name = f"{name_prefix}_{image_name}_{image_tag}"
+
+        # name must only be alphanumeric, with _- in middle
+        name = re.sub("[^A-Za-z0-9_-]", "_", name)
+        if not re.match("^[A-Za-z0-9][A-Za-z0-9_-]{1,126}[A-Za-z0-9]$", name):
+            raise ValueError(f"name invalid '{name}'")
 
         # start up a client
         batch_client = boto3.client("batch")
